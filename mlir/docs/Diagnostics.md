@@ -1,4 +1,4 @@
-# Introduction and Usage Guide to MLIR's Diagnostics Infrastructure
+# Diagnostic Infrastructure
 
 [TOC]
 
@@ -93,8 +93,8 @@ DiagnosticEngine engine = ctx->getDiagEngine();
 // or failure if the diagnostic should be propagated to the previous handlers.
 DiagnosticEngine::HandlerID id = engine.registerHandler(
     [](Diagnostic &diag) -> LogicalResult {
-  bool should_propage_diagnostic = ...;
-  return failure(should_propage_diagnostic);
+  bool should_propagate_diagnostic = ...;
+  return failure(should_propagate_diagnostic);
 });
 
 
@@ -186,7 +186,7 @@ op->emitError("...").attachNote() << "...";
 ## InFlight Diagnostic
 
 Now that [Diagnostics](#diagnostic) have been explained, we introduce the
-`InFlightDiagnostic`. is an RAII wrapper around a diagnostic that is set to be
+`InFlightDiagnostic`, an RAII wrapper around a diagnostic that is set to be
 reported. This allows for modifying a diagnostic while it is still in flight. If
 it is not reported directly by the user it will automatically report when
 destroyed.
@@ -200,7 +200,9 @@ destroyed.
 ## Diagnostic Configuration Options
 
 Several options are provided to help control and enhance the behavior of
-diagnostics. These options are listed below:
+diagnostics. These options can be configured via the MLIRContext, and registered
+to the command line with the `registerMLIRContextCLOptions` method. These
+options are listed below:
 
 ### Print Operation On Diagnostic
 

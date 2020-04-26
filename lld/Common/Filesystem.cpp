@@ -43,7 +43,7 @@ void lld::unlinkAsync(StringRef path) {
 #if defined(_WIN32)
   sys::fs::remove(path);
 #else
-  if (!threadsEnabled || !sys::fs::exists(path) ||
+  if (parallel::strategy.ThreadsRequested == 1 || !sys::fs::exists(path) ||
       !sys::fs::is_regular_file(path))
     return;
 
@@ -87,7 +87,7 @@ void lld::unlinkAsync(StringRef path) {
 // We also don't want to reimplement heuristics to determine if a
 // file is writable. So we'll let FileOutputBuffer do the work.
 //
-// FileOutputBuffer doesn't touch a desitnation file until commit()
+// FileOutputBuffer doesn't touch a destination file until commit()
 // is called. We use that class without calling commit() to predict
 // if the given file is writable.
 std::error_code lld::tryCreateFile(StringRef path) {

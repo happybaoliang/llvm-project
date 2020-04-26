@@ -82,7 +82,8 @@ template <typename T> struct QueryParser::LexOrCompleteWord {
              CaseStr.substr(0, WordCompletionPos) ==
                  Word.substr(0, WordCompletionPos))
       P->Completions.push_back(LineEditor::Completion(
-          (CaseStr.substr(WordCompletionPos) + " ").str(), CaseStr));
+          (CaseStr.substr(WordCompletionPos) + " ").str(),
+          std::string(CaseStr)));
     return *this;
   }
 
@@ -250,7 +251,7 @@ QueryRef QueryParser::doParse() {
       return completeMatcherExpression();
 
     Diagnostics Diag;
-    auto MatcherSource = Line.trim();
+    auto MatcherSource = Line.ltrim();
     auto OrigMatcherSource = MatcherSource;
     Optional<DynTypedMatcher> Matcher = Parser::parseMatcherExpression(
         MatcherSource, nullptr, &QS.NamedValues, &Diag);

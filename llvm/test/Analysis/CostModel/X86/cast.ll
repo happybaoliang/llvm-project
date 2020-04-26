@@ -42,11 +42,11 @@ define i32 @add(i32 %arg) {
 ; AVX2-NEXT:  Cost Model: Found an estimated cost of 0 for instruction: ret i32 undef
 ;
 ; AVX512-LABEL: 'add'
-; AVX512-NEXT:  Cost Model: Found an estimated cost of 12 for instruction: %A = zext <4 x i1> undef to <4 x i32>
-; AVX512-NEXT:  Cost Model: Found an estimated cost of 12 for instruction: %B = sext <4 x i1> undef to <4 x i32>
+; AVX512-NEXT:  Cost Model: Found an estimated cost of 2 for instruction: %A = zext <4 x i1> undef to <4 x i32>
+; AVX512-NEXT:  Cost Model: Found an estimated cost of 1 for instruction: %B = sext <4 x i1> undef to <4 x i32>
 ; AVX512-NEXT:  Cost Model: Found an estimated cost of 0 for instruction: %C = trunc <4 x i32> undef to <4 x i1>
-; AVX512-NEXT:  Cost Model: Found an estimated cost of 3 for instruction: %D = zext <8 x i1> undef to <8 x i32>
-; AVX512-NEXT:  Cost Model: Found an estimated cost of 3 for instruction: %E = sext <8 x i1> undef to <8 x i32>
+; AVX512-NEXT:  Cost Model: Found an estimated cost of 2 for instruction: %D = zext <8 x i1> undef to <8 x i32>
+; AVX512-NEXT:  Cost Model: Found an estimated cost of 1 for instruction: %E = sext <8 x i1> undef to <8 x i32>
 ; AVX512-NEXT:  Cost Model: Found an estimated cost of 0 for instruction: %F = trunc <8 x i32> undef to <8 x i1>
 ; AVX512-NEXT:  Cost Model: Found an estimated cost of 1 for instruction: %G = zext i1 undef to i32
 ; AVX512-NEXT:  Cost Model: Found an estimated cost of 0 for instruction: %H = trunc i32 undef to i1
@@ -177,7 +177,7 @@ define i32 @zext_sext(<8 x i1> %in) {
 ; AVX2-NEXT:  Cost Model: Found an estimated cost of 1 for instruction: %D = zext <4 x i32> undef to <4 x i64>
 ; AVX2-NEXT:  Cost Model: Found an estimated cost of 3 for instruction: %D1 = zext <8 x i32> undef to <8 x i64>
 ; AVX2-NEXT:  Cost Model: Found an estimated cost of 3 for instruction: %D2 = sext <8 x i32> undef to <8 x i64>
-; AVX2-NEXT:  Cost Model: Found an estimated cost of 4 for instruction: %D3 = zext <16 x i16> undef to <16 x i32>
+; AVX2-NEXT:  Cost Model: Found an estimated cost of 3 for instruction: %D3 = zext <16 x i16> undef to <16 x i32>
 ; AVX2-NEXT:  Cost Model: Found an estimated cost of 4 for instruction: %D4 = zext <16 x i8> undef to <16 x i32>
 ; AVX2-NEXT:  Cost Model: Found an estimated cost of 7 for instruction: %D5 = zext <16 x i1> undef to <16 x i32>
 ; AVX2-NEXT:  Cost Model: Found an estimated cost of 2 for instruction: %E = trunc <4 x i64> undef to <4 x i32>
@@ -191,8 +191,8 @@ define i32 @zext_sext(<8 x i1> %in) {
 ; AVX2-NEXT:  Cost Model: Found an estimated cost of 0 for instruction: ret i32 undef
 ;
 ; AVX512-LABEL: 'zext_sext'
-; AVX512-NEXT:  Cost Model: Found an estimated cost of 3 for instruction: %Z = zext <8 x i1> %in to <8 x i32>
-; AVX512-NEXT:  Cost Model: Found an estimated cost of 3 for instruction: %S = sext <8 x i1> %in to <8 x i32>
+; AVX512-NEXT:  Cost Model: Found an estimated cost of 2 for instruction: %Z = zext <8 x i1> %in to <8 x i32>
+; AVX512-NEXT:  Cost Model: Found an estimated cost of 1 for instruction: %S = sext <8 x i1> %in to <8 x i32>
 ; AVX512-NEXT:  Cost Model: Found an estimated cost of 1 for instruction: %A1 = zext <16 x i8> undef to <16 x i16>
 ; AVX512-NEXT:  Cost Model: Found an estimated cost of 1 for instruction: %A2 = sext <16 x i8> undef to <16 x i16>
 ; AVX512-NEXT:  Cost Model: Found an estimated cost of 1 for instruction: %A = sext <8 x i16> undef to <8 x i32>
@@ -276,8 +276,8 @@ define i32 @masks8(<8 x i1> %in) {
 ; AVX2-NEXT:  Cost Model: Found an estimated cost of 0 for instruction: ret i32 undef
 ;
 ; AVX512-LABEL: 'masks8'
-; AVX512-NEXT:  Cost Model: Found an estimated cost of 3 for instruction: %Z = zext <8 x i1> %in to <8 x i32>
-; AVX512-NEXT:  Cost Model: Found an estimated cost of 3 for instruction: %S = sext <8 x i1> %in to <8 x i32>
+; AVX512-NEXT:  Cost Model: Found an estimated cost of 2 for instruction: %Z = zext <8 x i1> %in to <8 x i32>
+; AVX512-NEXT:  Cost Model: Found an estimated cost of 1 for instruction: %S = sext <8 x i1> %in to <8 x i32>
 ; AVX512-NEXT:  Cost Model: Found an estimated cost of 0 for instruction: ret i32 undef
 ;
   %Z = zext <8 x i1> %in to <8 x i32>
@@ -302,8 +302,8 @@ define i32 @masks4(<4 x i1> %in) {
 ; AVX2-NEXT:  Cost Model: Found an estimated cost of 0 for instruction: ret i32 undef
 ;
 ; AVX512-LABEL: 'masks4'
-; AVX512-NEXT:  Cost Model: Found an estimated cost of 3 for instruction: %Z = zext <4 x i1> %in to <4 x i64>
-; AVX512-NEXT:  Cost Model: Found an estimated cost of 3 for instruction: %S = sext <4 x i1> %in to <4 x i64>
+; AVX512-NEXT:  Cost Model: Found an estimated cost of 2 for instruction: %Z = zext <4 x i1> %in to <4 x i64>
+; AVX512-NEXT:  Cost Model: Found an estimated cost of 1 for instruction: %S = sext <4 x i1> %in to <4 x i64>
 ; AVX512-NEXT:  Cost Model: Found an estimated cost of 0 for instruction: ret i32 undef
 ;
   %Z = zext <4 x i1> %in to <4 x i64>

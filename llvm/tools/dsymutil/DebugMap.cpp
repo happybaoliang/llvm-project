@@ -41,7 +41,7 @@ using namespace llvm::object;
 DebugMapObject::DebugMapObject(StringRef ObjectFilename,
                                sys::TimePoint<std::chrono::seconds> Timestamp,
                                uint8_t Type)
-    : Filename(ObjectFilename), Timestamp(Timestamp), Type(Type) {}
+    : Filename(std::string(ObjectFilename)), Timestamp(Timestamp), Type(Type) {}
 
 bool DebugMapObject::addSymbol(StringRef Name, Optional<uint64_t> ObjectAddress,
                                uint64_t LinkedAddress, uint32_t Size) {
@@ -228,7 +228,8 @@ MappingTraits<dsymutil::DebugMapObject>::YamlDMO::YamlDMO(
   Timestamp = sys::toTimeT(Obj.getTimestamp());
   Entries.reserve(Obj.Symbols.size());
   for (auto &Entry : Obj.Symbols)
-    Entries.push_back(std::make_pair(Entry.getKey(), Entry.getValue()));
+    Entries.push_back(
+        std::make_pair(std::string(Entry.getKey()), Entry.getValue()));
 }
 
 dsymutil::DebugMapObject
@@ -255,9 +256,12 @@ MappingTraits<dsymutil::DebugMapObject>::YamlDMO::denormalize(IO &IO) {
       for (const auto &Sym : Object->symbols()) {
         uint64_t Address = Sym.getValue();
         Expected<StringRef> Name = Sym.getName();
-        if (!Name || (Sym.getFlags() &
-                      (SymbolRef::SF_Absolute | SymbolRef::SF_Common))) {
+        Expected<uint32_t> FlagsOrErr = Sym.getFlags();
+        if (!Name || !FlagsOrErr ||
+            (*FlagsOrErr & (SymbolRef::SF_Absolute | SymbolRef::SF_Common))) {
           // TODO: Actually report errors helpfully.
+          if (!FlagsOrErr)
+            consumeError(FlagsOrErr.takeError());
           if (!Name)
             consumeError(Name.takeError());
           continue;

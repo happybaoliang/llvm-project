@@ -1,6 +1,6 @@
 //===- Dominance.h - Dominator analysis for CFGs ----------------*- C++ -*-===//
 //
-// Part of the MLIR Project, under the Apache License v2.0 with LLVM Exceptions.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
@@ -34,17 +34,25 @@ public:
   /// Recalculate the dominance info.
   void recalculate(Operation *op);
 
+  /// Finds the nearest common dominator block for the two given blocks a
+  /// and b. If no common dominator can be found, this function will return
+  /// nullptr.
+  Block *findNearestCommonDominator(Block *a, Block *b) const;
+
   /// Get the root dominance node of the given region.
   DominanceInfoNode *getRootNode(Region *region) {
     assert(dominanceInfos.count(region) != 0);
     return dominanceInfos[region]->getRootNode();
   }
 
+  /// Return the dominance node from the Region containing block A.
+  DominanceInfoNode *getNode(Block *a);
+
 protected:
   using super = DominanceInfoBase<IsPostDom>;
 
   /// Return true if the specified block A properly dominates block B.
-  bool properlyDominates(Block *a, Block *b);
+  bool properlyDominates(Block *a, Block *b) const;
 
   /// A mapping of regions to their base dominator tree.
   DenseMap<Region *, std::unique_ptr<base>> dominanceInfos;
@@ -57,33 +65,30 @@ public:
   using super::super;
 
   /// Return true if operation A properly dominates operation B.
-  bool properlyDominates(Operation *a, Operation *b);
+  bool properlyDominates(Operation *a, Operation *b) const;
 
   /// Return true if operation A dominates operation B.
-  bool dominates(Operation *a, Operation *b) {
+  bool dominates(Operation *a, Operation *b) const {
     return a == b || properlyDominates(a, b);
   }
 
   /// Return true if value A properly dominates operation B.
-  bool properlyDominates(Value a, Operation *b);
+  bool properlyDominates(Value a, Operation *b) const;
 
   /// Return true if operation A dominates operation B.
-  bool dominates(Value a, Operation *b) {
-    return (Operation *)a->getDefiningOp() == b || properlyDominates(a, b);
+  bool dominates(Value a, Operation *b) const {
+    return (Operation *)a.getDefiningOp() == b || properlyDominates(a, b);
   }
 
   /// Return true if the specified block A dominates block B.
-  bool dominates(Block *a, Block *b) {
+  bool dominates(Block *a, Block *b) const {
     return a == b || properlyDominates(a, b);
   }
 
   /// Return true if the specified block A properly dominates block B.
-  bool properlyDominates(Block *a, Block *b) {
+  bool properlyDominates(Block *a, Block *b) const {
     return super::properlyDominates(a, b);
   }
-
-  /// Return the dominance node from the Region containing block A.
-  DominanceInfoNode *getNode(Block *a);
 
   /// Update the internal DFS numbers for the dominance nodes.
   void updateDFSNumbers();

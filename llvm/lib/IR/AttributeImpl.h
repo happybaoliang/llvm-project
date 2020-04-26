@@ -16,6 +16,7 @@
 #define LLVM_LIB_IR_ATTRIBUTEIMPL_H
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/IR/Attributes.h"
@@ -134,10 +135,7 @@ class IntAttributeImpl : public EnumAttributeImpl {
 public:
   IntAttributeImpl(Attribute::AttrKind Kind, uint64_t Val)
       : EnumAttributeImpl(IntAttrEntry, Kind), Val(Val) {
-    assert((Kind == Attribute::Alignment || Kind == Attribute::StackAlignment ||
-            Kind == Attribute::Dereferenceable ||
-            Kind == Attribute::DereferenceableOrNull ||
-            Kind == Attribute::AllocSize) &&
+    assert(Attribute::doesAttrKindHaveArgument(Kind) &&
            "Wrong kind for int attribute!");
   }
 
@@ -152,7 +150,8 @@ class StringAttributeImpl : public AttributeImpl {
 
 public:
   StringAttributeImpl(StringRef Kind, StringRef Val = StringRef())
-      : AttributeImpl(StringAttrEntry), Kind(Kind), Val(Val) {}
+      : AttributeImpl(StringAttrEntry), Kind(std::string(Kind)),
+        Val(std::string(Val)) {}
 
   StringRef getStringKind() const { return Kind; }
   StringRef getStringValue() const { return Val; }
@@ -182,6 +181,8 @@ class AttributeSetNode final
   unsigned NumAttrs; ///< Number of attributes in this node.
   /// Bitset with a bit for each available attribute Attribute::AttrKind.
   uint8_t AvailableAttrs[12] = {};
+
+  DenseMap<StringRef, Attribute> StringAttrs;
 
   AttributeSetNode(ArrayRef<Attribute> Attrs);
 

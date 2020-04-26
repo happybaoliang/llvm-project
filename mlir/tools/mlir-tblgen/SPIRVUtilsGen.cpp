@@ -1,6 +1,6 @@
 //===- SPIRVSerializationGen.cpp - SPIR-V serialization utility generator -===//
 //
-// Part of the MLIR Project, under the Apache License v2.0 with LLVM Exceptions.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
@@ -11,7 +11,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Support/StringExtras.h"
 #include "mlir/TableGen/Attribute.h"
 #include "mlir/TableGen/Format.h"
 #include "mlir/TableGen/GenInfo.h"
@@ -21,6 +20,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TableGen/Error.h"
@@ -40,6 +40,7 @@ using llvm::StringRef;
 using llvm::Twine;
 using mlir::tblgen::Attribute;
 using mlir::tblgen::EnumAttr;
+using mlir::tblgen::EnumAttrCase;
 using mlir::tblgen::NamedAttribute;
 using mlir::tblgen::NamedTypeConstraint;
 using mlir::tblgen::Operator;
@@ -81,6 +82,9 @@ public:
 
   // Returns the C++ type for an availability instance.
   StringRef getMergeInstanceType() const;
+
+  // Returns the C++ statements for preparing availability instance.
+  StringRef getMergeInstancePreparation() const;
 
   // Returns the concrete availability instance carried in this case.
   StringRef getMergeInstance() const;
@@ -134,8 +138,26 @@ StringRef Availability::getMergeInstanceType() const {
   return def->getValueAsString("instanceType");
 }
 
+StringRef Availability::getMergeInstancePreparation() const {
+  return def->getValueAsString("instancePreparation");
+}
+
 StringRef Availability::getMergeInstance() const {
   return def->getValueAsString("instance");
+}
+
+// Returns the availability spec of the given `def`.
+std::vector<Availability> getAvailabilities(const Record &def) {
+  std::vector<Availability> availabilities;
+
+  if (def.getValue("availability")) {
+    std::vector<Record *> availDefs = def.getValueAsListOfDefs("availability");
+    availabilities.reserve(availDefs.size());
+    for (const Record *avail : availDefs)
+      availabilities.emplace_back(avail);
+  }
+
+  return availabilities;
 }
 
 //===----------------------------------------------------------------------===//
@@ -205,7 +227,8 @@ static void emitModelDecl(const Availability &availability, raw_ostream &os) {
 static void emitInterfaceDecl(const Availability &availability,
                               raw_ostream &os) {
   StringRef interfaceName = availability.getInterfaceClassName();
-  std::string interfaceTraitsName = formatv("{0}Traits", interfaceName);
+  std::string interfaceTraitsName =
+      std::string(formatv("{0}Traits", interfaceName));
 
   // Emit the traits struct containing the concept and model declarations.
   os << "namespace detail {\n"
@@ -270,6 +293,188 @@ static mlir::GenRegistration
                      [](const RecordKeeper &records, raw_ostream &os) {
                        return emitInterfaceDefs(records, os);
                      });
+
+//===----------------------------------------------------------------------===//
+// Enum Availability Query AutoGen
+//===----------------------------------------------------------------------===//
+
+static void emitAvailabilityQueryForIntEnum(const Record &enumDef,
+                                            raw_ostream &os) {
+  EnumAttr enumAttr(enumDef);
+  StringRef enumName = enumAttr.getEnumClassName();
+  std::vector<EnumAttrCase> enumerants = enumAttr.getAllCases();
+
+  // Mapping from availability class name to (enumerant, availability
+  // specification) pairs.
+  llvm::StringMap<llvm::SmallVector<std::pair<EnumAttrCase, Availability>, 1>>
+      classCaseMap;
+
+  // Place all availability specifications to their corresponding
+  // availability classes.
+  for (const EnumAttrCase &enumerant : enumerants)
+    for (const Availability &avail : getAvailabilities(enumerant.getDef()))
+      classCaseMap[avail.getClass()].push_back({enumerant, avail});
+
+  for (const auto &classCasePair : classCaseMap) {
+    Availability avail = classCasePair.getValue().front().second;
+
+    os << formatv("llvm::Optional<{0}> {1}({2} value) {{\n",
+                  avail.getMergeInstanceType(), avail.getQueryFnName(),
+                  enumName);
+
+    os << "  switch (value) {\n";
+    for (const auto &caseSpecPair : classCasePair.getValue()) {
+      EnumAttrCase enumerant = caseSpecPair.first;
+      Availability avail = caseSpecPair.second;
+      os << formatv("  case {0}::{1}: { {2} return {3}({4}); }\n", enumName,
+                    enumerant.getSymbol(), avail.getMergeInstancePreparation(),
+                    avail.getMergeInstanceType(), avail.getMergeInstance());
+    }
+    // Only emit default if uncovered cases.
+    if (classCasePair.getValue().size() < enumAttr.getAllCases().size())
+      os << "  default: break;\n";
+    os << "  }\n"
+       << "  return llvm::None;\n"
+       << "}\n";
+  }
+}
+
+static void emitAvailabilityQueryForBitEnum(const Record &enumDef,
+                                            raw_ostream &os) {
+  EnumAttr enumAttr(enumDef);
+  StringRef enumName = enumAttr.getEnumClassName();
+  std::string underlyingType = std::string(enumAttr.getUnderlyingType());
+  std::vector<EnumAttrCase> enumerants = enumAttr.getAllCases();
+
+  // Mapping from availability class name to (enumerant, availability
+  // specification) pairs.
+  llvm::StringMap<llvm::SmallVector<std::pair<EnumAttrCase, Availability>, 1>>
+      classCaseMap;
+
+  // Place all availability specifications to their corresponding
+  // availability classes.
+  for (const EnumAttrCase &enumerant : enumerants)
+    for (const Availability &avail : getAvailabilities(enumerant.getDef()))
+      classCaseMap[avail.getClass()].push_back({enumerant, avail});
+
+  for (const auto &classCasePair : classCaseMap) {
+    Availability avail = classCasePair.getValue().front().second;
+
+    os << formatv("llvm::Optional<{0}> {1}({2} value) {{\n",
+                  avail.getMergeInstanceType(), avail.getQueryFnName(),
+                  enumName);
+
+    os << formatv(
+        "  assert(::llvm::countPopulation(static_cast<{0}>(value)) <= 1"
+        " && \"cannot have more than one bit set\");\n",
+        underlyingType);
+
+    os << "  switch (value) {\n";
+    for (const auto &caseSpecPair : classCasePair.getValue()) {
+      EnumAttrCase enumerant = caseSpecPair.first;
+      Availability avail = caseSpecPair.second;
+      os << formatv("  case {0}::{1}: { {2} return {3}({4}); }\n", enumName,
+                    enumerant.getSymbol(), avail.getMergeInstancePreparation(),
+                    avail.getMergeInstanceType(), avail.getMergeInstance());
+    }
+    os << "  default: break;\n";
+    os << "  }\n"
+       << "  return llvm::None;\n"
+       << "}\n";
+  }
+}
+
+static void emitEnumDecl(const Record &enumDef, raw_ostream &os) {
+  EnumAttr enumAttr(enumDef);
+  StringRef enumName = enumAttr.getEnumClassName();
+  StringRef cppNamespace = enumAttr.getCppNamespace();
+  auto enumerants = enumAttr.getAllCases();
+
+  llvm::SmallVector<StringRef, 2> namespaces;
+  llvm::SplitString(cppNamespace, namespaces, "::");
+
+  for (auto ns : namespaces)
+    os << "namespace " << ns << " {\n";
+
+  llvm::StringSet<> handledClasses;
+
+  // Place all availability specifications to their corresponding
+  // availability classes.
+  for (const EnumAttrCase &enumerant : enumerants)
+    for (const Availability &avail : getAvailabilities(enumerant.getDef())) {
+      StringRef className = avail.getClass();
+      if (handledClasses.count(className))
+        continue;
+      os << formatv("llvm::Optional<{0}> {1}({2} value);\n",
+                    avail.getMergeInstanceType(), avail.getQueryFnName(),
+                    enumName);
+      handledClasses.insert(className);
+    }
+
+  for (auto ns : llvm::reverse(namespaces))
+    os << "} // namespace " << ns << "\n";
+}
+
+static bool emitEnumDecls(const RecordKeeper &recordKeeper, raw_ostream &os) {
+  llvm::emitSourceFileHeader("SPIR-V Enum Availability Declarations", os);
+
+  auto defs = recordKeeper.getAllDerivedDefinitions("EnumAttrInfo");
+  for (const auto *def : defs)
+    emitEnumDecl(*def, os);
+
+  return false;
+}
+
+static void emitEnumDef(const Record &enumDef, raw_ostream &os) {
+  EnumAttr enumAttr(enumDef);
+  StringRef cppNamespace = enumAttr.getCppNamespace();
+
+  llvm::SmallVector<StringRef, 2> namespaces;
+  llvm::SplitString(cppNamespace, namespaces, "::");
+
+  for (auto ns : namespaces)
+    os << "namespace " << ns << " {\n";
+
+  if (enumAttr.isBitEnum()) {
+    emitAvailabilityQueryForBitEnum(enumDef, os);
+  } else {
+    emitAvailabilityQueryForIntEnum(enumDef, os);
+  }
+
+  for (auto ns : llvm::reverse(namespaces))
+    os << "} // namespace " << ns << "\n";
+  os << "\n";
+}
+
+static bool emitEnumDefs(const RecordKeeper &recordKeeper, raw_ostream &os) {
+  llvm::emitSourceFileHeader("SPIR-V Enum Availability Definitions", os);
+
+  auto defs = recordKeeper.getAllDerivedDefinitions("EnumAttrInfo");
+  for (const auto *def : defs)
+    emitEnumDef(*def, os);
+
+  return false;
+}
+
+//===----------------------------------------------------------------------===//
+// Enum Availability Query Hook Registration
+//===----------------------------------------------------------------------===//
+
+// Registers the enum utility generator to mlir-tblgen.
+static mlir::GenRegistration
+    genEnumDecls("gen-spirv-enum-avail-decls",
+                 "Generate SPIR-V enum availability declarations",
+                 [](const RecordKeeper &records, raw_ostream &os) {
+                   return emitEnumDecls(records, os);
+                 });
+
+// Registers the enum utility generator to mlir-tblgen.
+static mlir::GenRegistration
+    genEnumDefs("gen-spirv-enum-avail-defs",
+                "Generate SPIR-V enum availability definitions",
+                [](const RecordKeeper &records, raw_ostream &os) {
+                  return emitEnumDefs(records, os);
+                });
 
 //===----------------------------------------------------------------------===//
 // Serialization AutoGen
@@ -410,7 +615,7 @@ static void emitDecorationSerialization(const Operator &op, StringRef tabs,
     os << tabs << formatv("for (auto attr : {0}.getAttrs()) {{\n", opVar);
     os << tabs
        << formatv("  if (llvm::any_of({0}, [&](StringRef elided)", elidedAttrs);
-    os << " {return attr.first.is(elided);})) {\n";
+    os << " {return attr.first == elided;})) {\n";
     os << tabs << "    continue;\n";
     os << tabs << "  }\n";
     os << tabs
@@ -600,11 +805,11 @@ static void emitOperandDeserialization(const Operator &op, ArrayRef<SMLoc> loc,
   for (unsigned i = 0, e = op.getNumArgs(); i < e; ++i) {
     auto argument = op.getArg(i);
     if (auto valueArg = argument.dyn_cast<NamedTypeConstraint *>()) {
-      if (valueArg->isVariadic()) {
+      if (valueArg->isVariableLength()) {
         if (i != e - 1) {
-          PrintFatalError(loc,
-                          "SPIR-V ops can have Variadic<..> argument only if "
-                          "it's the last argument");
+          PrintFatalError(loc, "SPIR-V ops can have Variadic<..> or "
+                               "Optional<...> arguments only if "
+                               "it's the last argument");
         }
         os << tabs
            << formatv("for (; {0} < {1}.size(); ++{0})", wordIndex, words);
@@ -622,7 +827,7 @@ static void emitOperandDeserialization(const Operator &op, ArrayRef<SMLoc> loc,
                 words, wordIndex);
       os << tabs << "  }\n";
       os << tabs << formatv("  {0}.push_back(arg);\n", operands);
-      if (!valueArg->isVariadic()) {
+      if (!valueArg->isVariableLength()) {
         os << tabs << formatv("  {0}++;\n", wordIndex);
       }
       operandNum++;
@@ -898,13 +1103,6 @@ static void emitEnumGetAttrNameFnDecl(raw_ostream &os) {
                 "attributeName();\n");
 }
 
-static void emitEnumGetSymbolizeFnDecl(raw_ostream &os) {
-  os << "template <typename EnumClass> using SymbolizeFnTy = "
-        "llvm::Optional<EnumClass> (*)(StringRef);\n";
-  os << "template <typename EnumClass> inline constexpr "
-        "SymbolizeFnTy<EnumClass> symbolizeEnum();\n";
-}
-
 static void emitEnumGetAttrNameFnDefn(const EnumAttr &enumAttr,
                                       raw_ostream &os) {
   auto enumName = enumAttr.getEnumClassName();
@@ -912,19 +1110,8 @@ static void emitEnumGetAttrNameFnDefn(const EnumAttr &enumAttr,
                 enumName);
   os << "  "
      << formatv("static constexpr const char attrName[] = \"{0}\";\n",
-                mlir::convertToSnakeCase(enumName));
+                llvm::convertToSnakeFromCamelCase(enumName));
   os << "  return attrName;\n";
-  os << "}\n";
-}
-
-static void emitEnumGetSymbolizeFnDefn(const EnumAttr &enumAttr,
-                                       raw_ostream &os) {
-  auto enumName = enumAttr.getEnumClassName();
-  auto strToSymFnName = enumAttr.getStringToSymbolFnName();
-  os << formatv(
-      "template <> inline SymbolizeFnTy<{0}> symbolizeEnum<{0}>() {{\n",
-      enumName);
-  os << "  return " << strToSymFnName << ";\n";
   os << "}\n";
 }
 
@@ -935,11 +1122,9 @@ static bool emitOpUtils(const RecordKeeper &recordKeeper, raw_ostream &os) {
   os << "#ifndef SPIRV_OP_UTILS_H_\n";
   os << "#define SPIRV_OP_UTILS_H_\n";
   emitEnumGetAttrNameFnDecl(os);
-  emitEnumGetSymbolizeFnDecl(os);
   for (const auto *def : defs) {
     EnumAttr enumAttr(*def);
     emitEnumGetAttrNameFnDefn(enumAttr, os);
-    emitEnumGetSymbolizeFnDefn(enumAttr, os);
   }
   os << "#endif // SPIRV_OP_UTILS_H\n";
   return false;
@@ -960,32 +1145,30 @@ static mlir::GenRegistration
 // SPIR-V Availability Impl AutoGen
 //===----------------------------------------------------------------------===//
 
-// Returns the availability spec of the given `def`.
-std::vector<Availability> getAvailabilities(const Record &def) {
-  std::vector<Availability> availabilities;
-  if (auto *availListInit = def.getValueAsListInit("availability")) {
-    availabilities.reserve(availListInit->size());
-    for (auto *availInit : *availListInit)
-      availabilities.emplace_back(
-          llvm::cast<llvm::DefInit>(availInit)->getDef());
-  }
-  return availabilities;
-}
-
 static void emitAvailabilityImpl(const Operator &srcOp, raw_ostream &os) {
   mlir::tblgen::FmtContext fctx;
-  fctx.addSubst("overall", "overall");
+  fctx.addSubst("overall", "tblgen_overall");
 
   std::vector<Availability> opAvailabilities =
       getAvailabilities(srcOp.getDef());
 
-  // First collect all availablity classes this op should implement.
-  // All availablity instances keep information for the generated interface and
+  // First collect all availability classes this op should implement.
+  // All availability instances keep information for the generated interface and
   // the instance's specific requirement. Here we remember a random instance so
   // we can get the information regarding the generated interface.
   llvm::StringMap<Availability> availClasses;
   for (const Availability &avail : opAvailabilities)
     availClasses.try_emplace(avail.getClass(), avail);
+  for (const NamedAttribute &namedAttr : srcOp.getAttributes()) {
+    const auto *enumAttr = llvm::dyn_cast<EnumAttr>(&namedAttr.attr);
+    if (!enumAttr)
+      continue;
+
+    for (const EnumAttrCase &enumerant : enumAttr->getAllCases())
+      for (const Availability &caseAvail :
+           getAvailabilities(enumerant.getDef()))
+        availClasses.try_emplace(caseAvail.getClass(), caseAvail);
+  }
 
   // Then generate implementation for each availability class.
   for (const auto &availClass : availClasses) {
@@ -997,18 +1180,79 @@ static void emitAvailabilityImpl(const Operator &srcOp, raw_ostream &os) {
                   srcOp.getCppClassName(), avail.getQueryFnName());
 
     // Create the variable for the final requirement and initialize it.
-    os << formatv("  {0} overall = {1};\n", avail.getQueryFnRetType(),
+    os << formatv("  {0} tblgen_overall = {1};\n", avail.getQueryFnRetType(),
                   avail.getMergeInitializer());
 
     // Update with the op's specific availability spec.
     for (const Availability &avail : opAvailabilities)
-      if (avail.getClass() == availClassName) {
-        os << "  "
-           << tgfmt(avail.getMergeActionCode(),
-                    &fctx.addSubst("instance", avail.getMergeInstance()))
-           << ";\n";
+      if (avail.getClass() == availClassName &&
+          (!avail.getMergeInstancePreparation().empty() ||
+           !avail.getMergeActionCode().empty())) {
+        os << "  {\n    "
+           // Prepare this instance.
+           << avail.getMergeInstancePreparation()
+           << "\n    "
+           // Merge this instance.
+           << std::string(
+                  tgfmt(avail.getMergeActionCode(),
+                        &fctx.addSubst("instance", avail.getMergeInstance())))
+           << ";\n  }\n";
       }
-    os << "  return overall;\n";
+
+    // Update with enum attributes' specific availability spec.
+    for (const NamedAttribute &namedAttr : srcOp.getAttributes()) {
+      const auto *enumAttr = llvm::dyn_cast<EnumAttr>(&namedAttr.attr);
+      if (!enumAttr)
+        continue;
+
+      // (enumerant, availability specification) pairs for this availability
+      // class.
+      SmallVector<std::pair<EnumAttrCase, Availability>, 1> caseSpecs;
+
+      // Collect all cases' availability specs.
+      for (const EnumAttrCase &enumerant : enumAttr->getAllCases())
+        for (const Availability &caseAvail :
+             getAvailabilities(enumerant.getDef()))
+          if (availClassName == caseAvail.getClass())
+            caseSpecs.push_back({enumerant, caseAvail});
+
+      // If this attribute kind does not have any availability spec from any of
+      // its cases, no more work to do.
+      if (caseSpecs.empty())
+        continue;
+
+      if (enumAttr->isBitEnum()) {
+        // For BitEnumAttr, we need to iterate over each bit to query its
+        // availability spec.
+        os << formatv("  for (unsigned i = 0; "
+                      "i < std::numeric_limits<{0}>::digits; ++i) {{\n",
+                      enumAttr->getUnderlyingType());
+        os << formatv("    {0}::{1} tblgen_attrVal = this->{2}() & "
+                      "static_cast<{0}::{1}>(1 << i);\n",
+                      enumAttr->getCppNamespace(), enumAttr->getEnumClassName(),
+                      namedAttr.name);
+        os << formatv(
+            "    if (static_cast<{0}>(tblgen_attrVal) == 0) continue;\n",
+            enumAttr->getUnderlyingType());
+      } else {
+        // For IntEnumAttr, we just need to query the value as a whole.
+        os << "  {\n";
+        os << formatv("    auto tblgen_attrVal = this->{0}();\n",
+                      namedAttr.name);
+      }
+      os << formatv("    auto tblgen_instance = {0}::{1}(tblgen_attrVal);\n",
+                    enumAttr->getCppNamespace(), avail.getQueryFnName());
+      os << "    if (tblgen_instance) "
+         // TODO(antiagainst): use `avail.getMergeCode()` here once ODS supports
+         // dialect-specific contents so that we can use not implementing the
+         // availability interface as indication of no requirements.
+         << std::string(tgfmt(caseSpecs.front().second.getMergeActionCode(),
+                              &fctx.addSubst("instance", "*tblgen_instance")))
+         << ";\n";
+      os << "  }\n";
+    }
+
+    os << "  return tblgen_overall;\n";
     os << "}\n";
   }
 }
@@ -1035,3 +1279,50 @@ static mlir::GenRegistration
                           [](const RecordKeeper &records, raw_ostream &os) {
                             return emitAvailabilityImpl(records, os);
                           });
+
+//===----------------------------------------------------------------------===//
+// SPIR-V Capability Implication AutoGen
+//===----------------------------------------------------------------------===//
+
+static bool emitCapabilityImplication(const RecordKeeper &recordKeeper,
+                                      raw_ostream &os) {
+  llvm::emitSourceFileHeader("SPIR-V Capability Implication", os);
+
+  EnumAttr enumAttr(recordKeeper.getDef("SPV_CapabilityAttr"));
+
+  os << "ArrayRef<Capability> "
+        "spirv::getDirectImpliedCapabilities(Capability cap) {\n"
+     << "  switch (cap) {\n"
+     << "  default: return {};\n";
+  for (const EnumAttrCase &enumerant : enumAttr.getAllCases()) {
+    const Record &def = enumerant.getDef();
+    if (!def.getValue("implies"))
+      continue;
+
+    std::vector<Record *> impliedCapsDefs = def.getValueAsListOfDefs("implies");
+    os << "  case Capability::" << enumerant.getSymbol()
+       << ": {static const Capability implies[" << impliedCapsDefs.size()
+       << "] = {";
+    llvm::interleaveComma(impliedCapsDefs, os, [&](const Record *capDef) {
+      os << "Capability::" << EnumAttrCase(capDef).getSymbol();
+    });
+    os << "}; return ArrayRef<Capability>(implies, " << impliedCapsDefs.size()
+       << "); }\n";
+  }
+  os << "  }\n";
+  os << "}\n";
+
+  return false;
+}
+
+//===----------------------------------------------------------------------===//
+// SPIR-V Capability Implication Hook Registration
+//===----------------------------------------------------------------------===//
+
+static mlir::GenRegistration
+    genCapabilityImplication("gen-spirv-capability-implication",
+                             "Generate utility function to return implied "
+                             "capabilities for a given capability",
+                             [](const RecordKeeper &records, raw_ostream &os) {
+                               return emitCapabilityImplication(records, os);
+                             });

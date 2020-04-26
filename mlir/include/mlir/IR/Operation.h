@@ -1,6 +1,6 @@
 //===- Operation.h - MLIR Operation Class -----------------------*- C++ -*-===//
 //
-// Part of the MLIR Project, under the Apache License v2.0 with LLVM Exceptions.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
@@ -26,8 +26,9 @@ namespace mlir {
 /// class.
 class Operation final
     : public llvm::ilist_node_with_parent<Operation, Block>,
-      private llvm::TrailingObjects<Operation, OpResult, BlockOperand, Region,
-                                    detail::OperandStorage> {
+      private llvm::TrailingObjects<Operation, detail::InLineOpResult,
+                                    detail::TrailingOpResult, BlockOperand,
+                                    Region, detail::OperandStorage> {
 public:
   /// Create a new Operation with the specific fields.
   static Operation *create(Location location, OperationName name,
@@ -124,6 +125,16 @@ public:
     return OpTy();
   }
 
+  /// Returns the closest surrounding parent operation with trait `Trait`.
+  template <template <typename T> class Trait>
+  Operation *getParentWithTrait() {
+    Operation *op = this;
+    while ((op = op->getParentOp()))
+      if (op->hasTrait<Trait>())
+        return op;
+    return nullptr;
+  }
+
   /// Return true if this operation is a proper ancestor of the `other`
   /// operation.
   bool isProperAncestor(Operation *other);
@@ -147,14 +158,14 @@ public:
 
     auto valueIt = values.begin();
     for (unsigned i = 0, e = getNumResults(); i != e; ++i)
-      getResult(i)->replaceAllUsesWith(*(valueIt++));
+      getResult(i).replaceAllUsesWith(*(valueIt++));
   }
 
   /// Replace all uses of results of this operation with results of 'op'.
   void replaceAllUsesWith(Operation *op) {
     assert(getNumResults() == op->getNumResults());
     for (unsigned i = 0, e = getNumResults(); i != e; ++i)
-      getResult(i)->replaceAllUsesWith(op->getResult(i));
+      getResult(i).replaceAllUsesWith(op->getResult(i));
   }
 
   /// Destroys this operation and its subclass data.
@@ -185,6 +196,8 @@ public:
   bool isBeforeInBlock(Operation *other);
 
   void print(raw_ostream &os, OpPrintingFlags flags = llvm::None);
+  void print(raw_ostream &os, AsmState &state,
+             OpPrintingFlags flags = llvm::None);
   void dump();
 
   //===--------------------------------------------------------------------===//
@@ -228,7 +241,7 @@ public:
 
   // Support operand type iteration.
   using operand_type_iterator = operand_range::type_iterator;
-  using operand_type_range = iterator_range<operand_type_iterator>;
+  using operand_type_range = operand_range::type_range;
   operand_type_iterator operand_type_begin() { return operand_begin(); }
   operand_type_iterator operand_type_end() { return operand_end(); }
   operand_type_range getOperandTypes() { return getOperands().getTypes(); }
@@ -237,12 +250,11 @@ public:
   // Results
   //===--------------------------------------------------------------------===//
 
-  /// Return true if there are no users of any results of this operation.
-  bool use_empty();
+  /// Return the number of results held by this operation.
+  unsigned getNumResults();
 
-  unsigned getNumResults() { return numResults; }
-
-  Value getResult(unsigned idx) { return getOpResult(idx); }
+  /// Get the 'idx'th result of this operation.
+  OpResult getResult(unsigned idx) { return OpResult(this, idx); }
 
   /// Support result iteration.
   using result_range = ResultRange;
@@ -252,18 +264,15 @@ public:
   result_iterator result_end() { return getResults().end(); }
   result_range getResults() { return result_range(this); }
 
-  MutableArrayRef<OpResult> getOpResults() {
-    return {getTrailingObjects<OpResult>(), numResults};
-  }
-
-  OpResult &getOpResult(unsigned idx) { return getOpResults()[idx]; }
+  result_range getOpResults() { return getResults(); }
+  OpResult getOpResult(unsigned idx) { return getResult(idx); }
 
   /// Support result type iteration.
   using result_type_iterator = result_range::type_iterator;
-  using result_type_range = iterator_range<result_type_iterator>;
-  result_type_iterator result_type_begin() { return result_begin(); }
-  result_type_iterator result_type_end() { return result_end(); }
-  result_type_range getResultTypes() { return getResults().getTypes(); }
+  using result_type_range = result_range::type_range;
+  result_type_iterator result_type_begin() { return getResultTypes().begin(); }
+  result_type_iterator result_type_end() { return getResultTypes().end(); }
+  result_type_range getResultTypes();
 
   //===--------------------------------------------------------------------===//
   // Attributes
@@ -374,7 +383,7 @@ public:
   }
 
   //===--------------------------------------------------------------------===//
-  // Terminators
+  // Successors
   //===--------------------------------------------------------------------===//
 
   MutableArrayRef<BlockOperand> getBlockOperands() {
@@ -387,61 +396,14 @@ public:
   succ_iterator successor_end() { return getSuccessors().end(); }
   SuccessorRange getSuccessors() { return SuccessorRange(this); }
 
-  /// Return the operands of this operation that are *not* successor arguments.
-  operand_range getNonSuccessorOperands();
-
-  operand_range getSuccessorOperands(unsigned index);
-
-  Value getSuccessorOperand(unsigned succIndex, unsigned opIndex) {
-    assert(!isKnownNonTerminator() && "only terminators may have successors");
-    assert(opIndex < getNumSuccessorOperands(succIndex));
-    return getOperand(getSuccessorOperandIndex(succIndex) + opIndex);
-  }
-
   bool hasSuccessors() { return numSuccs != 0; }
   unsigned getNumSuccessors() { return numSuccs; }
-  unsigned getNumSuccessorOperands(unsigned index) {
-    assert(!isKnownNonTerminator() && "only terminators may have successors");
-    assert(index < getNumSuccessors());
-    return getBlockOperands()[index].numSuccessorOperands;
-  }
 
   Block *getSuccessor(unsigned index) {
     assert(index < getNumSuccessors());
     return getBlockOperands()[index].get();
   }
   void setSuccessor(Block *block, unsigned index);
-
-  /// Erase a specific operand from the operand list of the successor at
-  /// 'index'.
-  void eraseSuccessorOperand(unsigned succIndex, unsigned opIndex) {
-    assert(succIndex < getNumSuccessors());
-    assert(opIndex < getNumSuccessorOperands(succIndex));
-    getOperandStorage().eraseOperand(getSuccessorOperandIndex(succIndex) +
-                                     opIndex);
-    --getBlockOperands()[succIndex].numSuccessorOperands;
-  }
-
-  /// Get the index of the first operand of the successor at the provided
-  /// index.
-  unsigned getSuccessorOperandIndex(unsigned index);
-
-  /// Return a pair (successorIndex, successorArgIndex) containing the index
-  /// of the successor that `operandIndex` belongs to and the index of the
-  /// argument to that successor that `operandIndex` refers to.
-  ///
-  /// If `operandIndex` is not a successor operand, None is returned.
-  Optional<std::pair<unsigned, unsigned>>
-  decomposeSuccessorOperandIndex(unsigned operandIndex);
-
-  /// Returns the `BlockArgument` corresponding to operand `operandIndex` in
-  /// some successor, or None if `operandIndex` isn't a successor operand index.
-  Optional<BlockArgument> getSuccessorBlockArgument(unsigned operandIndex) {
-    auto decomposed = decomposeSuccessorOperandIndex(operandIndex);
-    if (!decomposed.hasValue())
-      return None;
-    return getSuccessor(decomposed->first)->getArgument(decomposed->second);
-  }
 
   //===--------------------------------------------------------------------===//
   // Accessors for various properties of operations
@@ -451,13 +413,6 @@ public:
   bool isCommutative() {
     if (auto *absOp = getAbstractOperation())
       return absOp->hasProperty(OperationProperty::Commutative);
-    return false;
-  }
-
-  /// Returns whether the operation has side-effects.
-  bool hasNoSideEffect() {
-    if (auto *absOp = getAbstractOperation())
-      return absOp->hasProperty(OperationProperty::NoSideEffect);
     return false;
   }
 
@@ -486,9 +441,9 @@ public:
     return getTerminatorStatus() == TerminatorStatus::NonTerminator;
   }
 
-  /// Returns if the operation is known to be completely isolated from enclosing
-  /// regions, i.e. no internal regions reference values defined above this
-  /// operation.
+  /// Returns true if the operation is known to be completely isolated from
+  /// enclosing regions, i.e., no internal regions reference values defined
+  /// above this operation.
   bool isKnownIsolatedFromAbove() {
     if (auto *absOp = getAbstractOperation())
       return absOp->hasProperty(OperationProperty::IsolatedFromAbove);
@@ -503,7 +458,7 @@ public:
                      SmallVectorImpl<OpFoldResult> &results);
 
   /// Returns if the operation was registered with a particular trait, e.g.
-  /// hasTrait<OperandsAreIntegerLike>().
+  /// hasTrait<OperandsAreSignlessIntegerLike>().
   template <template <typename T> class Trait> bool hasTrait() {
     auto *absOp = getAbstractOperation();
     return absOp ? absOp->hasTrait<Trait>() : false;
@@ -532,6 +487,76 @@ public:
   RetT walk(FnT &&callback) {
     return detail::walkOperations(this, std::forward<FnT>(callback));
   }
+
+  //===--------------------------------------------------------------------===//
+  // Uses
+  //===--------------------------------------------------------------------===//
+
+  /// Drop all uses of results of this operation.
+  void dropAllUses() {
+    for (OpResult result : getOpResults())
+      result.dropAllUses();
+  }
+
+  /// This class implements a use iterator for the Operation. This iterates over
+  /// all uses of all results.
+  class UseIterator final
+      : public llvm::iterator_facade_base<
+            UseIterator, std::forward_iterator_tag, OpOperand> {
+  public:
+    /// Initialize UseIterator for op, specify end to return iterator to last
+    /// use.
+    explicit UseIterator(Operation *op, bool end = false);
+
+    using llvm::iterator_facade_base<UseIterator, std::forward_iterator_tag,
+                                     OpOperand>::operator++;
+    UseIterator &operator++();
+    OpOperand *operator->() const { return use.getOperand(); }
+    OpOperand &operator*() const { return *use.getOperand(); }
+
+    bool operator==(const UseIterator &rhs) const { return use == rhs.use; }
+    bool operator!=(const UseIterator &rhs) const { return !(*this == rhs); }
+
+  private:
+    void skipOverResultsWithNoUsers();
+
+    /// The operation whose uses are being iterated over.
+    Operation *op;
+    /// The result of op who's uses are being iterated over.
+    Operation::result_iterator res;
+    /// The use of the result.
+    Value::use_iterator use;
+  };
+  using use_iterator = UseIterator;
+  using use_range = iterator_range<use_iterator>;
+
+  use_iterator use_begin() { return use_iterator(this); }
+  use_iterator use_end() { return use_iterator(this, /*end=*/true); }
+
+  /// Returns a range of all uses, which is useful for iterating over all uses.
+  use_range getUses() { return {use_begin(), use_end()}; }
+
+  /// Returns true if this operation has exactly one use.
+  bool hasOneUse() { return llvm::hasSingleElement(getUses()); }
+
+  /// Returns true if this operation has no uses.
+  bool use_empty() {
+    return llvm::all_of(getOpResults(),
+                        [](OpResult result) { return result.use_empty(); });
+  }
+
+  //===--------------------------------------------------------------------===//
+  // Users
+  //===--------------------------------------------------------------------===//
+
+  using user_iterator = ValueUserIterator<use_iterator, OpOperand>;
+  using user_range = iterator_range<user_iterator>;
+
+  user_iterator user_begin() { return user_iterator(use_begin()); }
+  user_iterator user_end() { return user_iterator(use_end()); }
+
+  /// Returns a range of all users.
+  user_range getUsers() { return {user_begin(), user_end()}; }
 
   //===--------------------------------------------------------------------===//
   // Other
@@ -574,7 +599,7 @@ private:
   bool hasValidOrder() { return orderIndex != kInvalidOrderIdx; }
 
 private:
-  Operation(Location location, OperationName name, unsigned numResults,
+  Operation(Location location, OperationName name, ArrayRef<Type> resultTypes,
             unsigned numSuccessors, unsigned numRegions,
             const NamedAttributeList &attributes);
 
@@ -585,6 +610,16 @@ private:
   /// Returns the operand storage object.
   detail::OperandStorage &getOperandStorage() {
     return *getTrailingObjects<detail::OperandStorage>();
+  }
+
+  /// Returns a pointer to the use list for the given trailing result.
+  detail::TrailingOpResult *getTrailingResult(unsigned resultNumber) {
+    return getTrailingObjects<detail::TrailingOpResult>() + resultNumber;
+  }
+
+  /// Returns a pointer to the use list for the given inline result.
+  detail::InLineOpResult *getInlineResult(unsigned resultNumber) {
+    return getTrailingObjects<detail::InLineOpResult>() + resultNumber;
   }
 
   /// Provide a 'getParent' method for ilist_node_with_parent methods.
@@ -605,7 +640,18 @@ private:
   /// O(1) local dominance checks between operations.
   mutable unsigned orderIndex = 0;
 
-  const unsigned numResults, numSuccs, numRegions;
+  const unsigned numSuccs;
+  const unsigned numRegions : 31;
+
+  /// This holds the result types of the operation. There are three different
+  /// states recorded here:
+  /// - 0 results : The type below is null.
+  /// - 1 result  : The single result type is held here.
+  /// - N results : The type here is a tuple holding the result types.
+  /// Note: We steal a bit for 'hasSingleResult' from somewhere else so that we
+  /// can use 'resultType` in an ArrayRef<Type>.
+  bool hasSingleResult : 1;
+  Type resultType;
 
   /// This holds the name of the operation.
   OperationName name;
@@ -619,14 +665,23 @@ private:
   // allow block to access the 'orderIndex' field.
   friend class Block;
 
+  // allow value to access the 'ResultStorage' methods.
+  friend class Value;
+
   // allow ilist_node_with_parent to access the 'getParent' method.
   friend class llvm::ilist_node_with_parent<Operation, Block>;
 
   // This stuff is used by the TrailingObjects template.
-  friend llvm::TrailingObjects<Operation, OpResult, BlockOperand, Region,
+  friend llvm::TrailingObjects<Operation, detail::InLineOpResult,
+                               detail::TrailingOpResult, BlockOperand, Region,
                                detail::OperandStorage>;
-  size_t numTrailingObjects(OverloadToken<OpResult>) const {
-    return numResults;
+  size_t numTrailingObjects(OverloadToken<detail::InLineOpResult>) const {
+    return OpResult::getNumInline(
+        const_cast<Operation *>(this)->getNumResults());
+  }
+  size_t numTrailingObjects(OverloadToken<detail::TrailingOpResult>) const {
+    return OpResult::getNumTrailing(
+        const_cast<Operation *>(this)->getNumResults());
   }
   size_t numTrailingObjects(OverloadToken<BlockOperand>) const {
     return numSuccs;
@@ -635,36 +690,10 @@ private:
 };
 
 inline raw_ostream &operator<<(raw_ostream &os, Operation &op) {
-  op.print(os);
+  op.print(os, OpPrintingFlags().useLocalScope());
   return os;
 }
 
-/// This class implements use iterator for the Operation. This iterates over all
-/// uses of all results of an Operation.
-class UseIterator final
-    : public llvm::iterator_facade_base<UseIterator, std::forward_iterator_tag,
-                                        Operation *> {
-public:
-  /// Initialize UseIterator for op, specify end to return iterator to last use.
-  explicit UseIterator(Operation *op, bool end = false);
-
-  UseIterator &operator++();
-  Operation *operator->() { return use->getOwner(); }
-  Operation *operator*() { return use->getOwner(); }
-
-  bool operator==(const UseIterator &other) const;
-  bool operator!=(const UseIterator &other) const;
-
-private:
-  void skipOverResultsWithNoUsers();
-
-  /// The operation whose uses are being iterated over.
-  Operation *op;
-  /// The result of op who's uses are being iterated over.
-  Operation::result_iterator res;
-  /// The use of the result.
-  Value::use_iterator use;
-};
 } // end namespace mlir
 
 namespace llvm {

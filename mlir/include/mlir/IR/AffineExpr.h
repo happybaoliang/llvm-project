@@ -1,6 +1,6 @@
 //===- AffineExpr.h - MLIR Affine Expr Class --------------------*- C++ -*-===//
 //
-// Part of the MLIR Project, under the Apache License v2.0 with LLVM Exceptions.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
@@ -67,15 +67,9 @@ class AffineExpr {
 public:
   using ImplType = detail::AffineExprStorage;
 
-  AffineExpr() : expr(nullptr) {}
+  constexpr AffineExpr() : expr(nullptr) {}
   /* implicit */ AffineExpr(const ImplType *expr)
       : expr(const_cast<ImplType *>(expr)) {}
-
-  AffineExpr(const AffineExpr &other) : expr(other.expr) {}
-  AffineExpr &operator=(AffineExpr other) {
-    expr = other.expr;
-    return *this;
-  }
 
   bool operator==(AffineExpr other) const { return expr == other.expr; }
   bool operator!=(AffineExpr other) const { return !(*this == other); }
@@ -87,6 +81,7 @@ public:
 
   template <typename U> bool isa() const;
   template <typename U> U dyn_cast() const;
+  template <typename U> U dyn_cast_or_null() const;
   template <typename U> U cast() const;
 
   MLIRContext *getContext() const;
@@ -192,7 +187,7 @@ public:
 class AffineConstantExpr : public AffineExpr {
 public:
   using ImplType = detail::AffineConstantExprStorage;
-  /* implicit */ AffineConstantExpr(AffineExpr::ImplType *ptr);
+  /* implicit */ AffineConstantExpr(AffineExpr::ImplType *ptr = nullptr);
   int64_t getValue() const;
 };
 
@@ -219,31 +214,30 @@ AffineExpr getAffineBinaryOpExpr(AffineExprKind kind, AffineExpr lhs,
 /// products expression, 'localExprs' is expected to have the AffineExpr
 /// for it, and is substituted into. The ArrayRef 'eq' is expected to be in the
 /// format [dims, symbols, locals, constant term].
-AffineExpr toAffineExpr(ArrayRef<int64_t> eq, unsigned numDims,
-                        unsigned numSymbols, ArrayRef<AffineExpr> localExprs,
-                        MLIRContext *context);
+AffineExpr getAffineExprFromFlatForm(ArrayRef<int64_t> flatExprs,
+                                     unsigned numDims, unsigned numSymbols,
+                                     ArrayRef<AffineExpr> localExprs,
+                                     MLIRContext *context);
 
-raw_ostream &operator<<(raw_ostream &os, AffineExpr &expr);
+raw_ostream &operator<<(raw_ostream &os, AffineExpr expr);
 
 template <typename U> bool AffineExpr::isa() const {
-  if (std::is_same<U, AffineBinaryOpExpr>::value) {
+  if (std::is_same<U, AffineBinaryOpExpr>::value)
     return getKind() <= AffineExprKind::LAST_AFFINE_BINARY_OP;
-  }
-  if (std::is_same<U, AffineDimExpr>::value) {
+  if (std::is_same<U, AffineDimExpr>::value)
     return getKind() == AffineExprKind::DimId;
-  }
-  if (std::is_same<U, AffineSymbolExpr>::value) {
+  if (std::is_same<U, AffineSymbolExpr>::value)
     return getKind() == AffineExprKind::SymbolId;
-  }
-  if (std::is_same<U, AffineConstantExpr>::value) {
+  if (std::is_same<U, AffineConstantExpr>::value)
     return getKind() == AffineExprKind::Constant;
-  }
 }
 template <typename U> U AffineExpr::dyn_cast() const {
-  if (isa<U>()) {
+  if (isa<U>())
     return U(expr);
-  }
   return U(nullptr);
+}
+template <typename U> U AffineExpr::dyn_cast_or_null() const {
+  return (!*this || !isa<U>()) ? U(nullptr) : U(expr);
 }
 template <typename U> U AffineExpr::cast() const {
   assert(isa<U>());
@@ -256,26 +250,6 @@ template <typename U> U AffineExpr::cast() const {
 ///  expression if it can't be simplified.
 AffineExpr simplifyAffineExpr(AffineExpr expr, unsigned numDims,
                               unsigned numSymbols);
-
-/// Flattens 'expr' into 'flattenedExpr'. Returns true on success or false
-/// if 'expr' could not be flattened (i.e., semi-affine is not yet handled).
-/// See documentation for AffineExprFlattener on how mod's and div's are
-/// flattened.
-bool getFlattenedAffineExpr(AffineExpr expr, unsigned numDims,
-                            unsigned numSymbols,
-                            SmallVectorImpl<int64_t> *flattenedExpr);
-
-/// Flattens the result expressions of the map to their corresponding flattened
-/// forms and set in 'flattenedExprs'. Returns true on success or false
-/// if any expression in the map could not be flattened (i.e., semi-affine is
-/// not yet handled).  For all affine expressions that share the same operands
-/// (like those of an affine map), this method should be used instead of
-/// repeatedly calling getFlattenedAffineExpr since local variables added to
-/// deal with div's and mod's will be reused across expressions.
-bool getFlattenedAffineExprs(
-    AffineMap map, std::vector<SmallVector<int64_t, 8>> *flattenedExprs);
-bool getFlattenedAffineExprs(
-    IntegerSet set, std::vector<SmallVector<int64_t, 8>> *flattenedExprs);
 
 namespace detail {
 template <int N> void bindDims(MLIRContext *ctx) {}

@@ -28,7 +28,7 @@ public:
 
   // Record existing #includes - both written and resolved paths. Only #includes
   // in the main file are collected.
-  void InclusionDirective(SourceLocation HashLoc, const Token & /*IncludeTok*/,
+  void InclusionDirective(SourceLocation HashLoc, const Token &IncludeTok,
                           llvm::StringRef FileName, bool IsAngled,
                           CharSourceRange FilenameRange, const FileEntry *File,
                           llvm::StringRef /*SearchPath*/,
@@ -41,9 +41,10 @@ public:
       Inc.R = halfOpenToRange(SM, FilenameRange);
       Inc.Written =
           (IsAngled ? "<" + FileName + ">" : "\"" + FileName + "\"").str();
-      Inc.Resolved = File ? File->tryGetRealPathName() : "";
+      Inc.Resolved = std::string(File ? File->tryGetRealPathName() : "");
       Inc.HashOffset = SM.getFileOffset(HashLoc);
       Inc.FileKind = FileKind;
+      Inc.Directive = IncludeTok.getIdentifierInfo()->getPPKeywordID();
     }
     if (File) {
       auto *IncludingFileEntry = SM.getFileEntryForID(SM.getFileID(HashLoc));
@@ -120,7 +121,7 @@ void IncludeStructure::recordInclude(llvm::StringRef IncludingName,
                                      llvm::StringRef IncludedRealName) {
   auto Child = fileIndex(IncludedName);
   if (!IncludedRealName.empty() && RealPathNames[Child].empty())
-    RealPathNames[Child] = IncludedRealName;
+    RealPathNames[Child] = std::string(IncludedRealName);
   auto Parent = fileIndex(IncludingName);
   IncludeChildren[Parent].push_back(Child);
 }
@@ -227,7 +228,7 @@ IncludeInserter::insert(llvm::StringRef VerbatimHeader) const {
 
 llvm::raw_ostream &operator<<(llvm::raw_ostream &OS, const Inclusion &Inc) {
   return OS << Inc.Written << " = "
-            << (Inc.Resolved.empty() ? Inc.Resolved : "[unresolved]") << " at "
+            << (!Inc.Resolved.empty() ? Inc.Resolved : "[unresolved]") << " at "
             << Inc.R;
 }
 

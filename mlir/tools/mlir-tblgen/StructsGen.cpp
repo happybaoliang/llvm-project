@@ -1,6 +1,6 @@
 //===- StructsGen.cpp - MLIR struct utility generator ---------------------===//
 //
-// Part of the MLIR Project, under the Apache License v2.0 with LLVM Exceptions.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
@@ -27,6 +27,7 @@ using llvm::raw_ostream;
 using llvm::Record;
 using llvm::RecordKeeper;
 using llvm::StringRef;
+using mlir::tblgen::FmtContext;
 using mlir::tblgen::StructAttr;
 
 static void
@@ -63,7 +64,7 @@ public:
   //   namespace::storage TblgenStruct::field1() const;
   const char *fieldInfo = R"(  {0} {1}() const;
 )";
-  for (const auto field : fields) {
+  for (auto field : fields) {
     auto name = field.getName();
     auto type = field.getType();
     auto storage = type.getStorageType();
@@ -134,8 +135,18 @@ static void emitFactoryDef(llvm::StringRef structName,
   fields.emplace_back({0}_id, {0});
 )";
 
+  const char *getFieldInfoOptional = R"(
+  if ({0}) {
+    auto {0}_id = mlir::Identifier::get("{0}", context);
+    fields.emplace_back({0}_id, {0});
+  }
+)";
+
   for (auto field : fields) {
-    os << llvm::formatv(getFieldInfo, field.getName());
+    if (field.getType().isOptional())
+      os << llvm::formatv(getFieldInfoOptional, field.getName());
+    else
+      os << llvm::formatv(getFieldInfo, field.getName());
   }
 
   const char *getEndInfo = R"(
@@ -153,33 +164,46 @@ static void emitClassofDef(llvm::StringRef structName,
 bool {0}::classof(mlir::Attribute attr))";
 
   const char *classofInfoHeader = R"(
-   auto derived = attr.dyn_cast<mlir::DictionaryAttr>();
-   if (!derived)
-     return false;
-   if (derived.size() != {0})
-     return false;
+  if (!attr)
+    return false;
+  auto derived = attr.dyn_cast<mlir::DictionaryAttr>();
+  if (!derived)
+    return false;
+  int empty_optionals = 0;
 )";
 
   os << llvm::formatv(classofInfo, structName) << " {";
-  os << llvm::formatv(classofInfoHeader, fields.size());
+  os << llvm::formatv(classofInfoHeader);
 
+  FmtContext fctx;
   const char *classofArgInfo = R"(
   auto {0} = derived.get("{0}");
-  if (!{0} || !{0}.isa<{1}>())
+  if (!{0} || !({1}))
+    return false;
+)";
+  const char *classofArgInfoOptional = R"(
+  auto {0} = derived.get("{0}");
+  if (!{0})
+    ++empty_optionals;
+  else if (!({1}))
     return false;
 )";
   for (auto field : fields) {
     auto name = field.getName();
     auto type = field.getType();
-    auto storage = type.getStorageType();
-    os << llvm::formatv(classofArgInfo, name, storage);
+    std::string condition =
+        std::string(tgfmt(type.getConditionTemplate(), &fctx.withSelf(name)));
+    if (type.isOptional())
+      os << llvm::formatv(classofArgInfoOptional, name, condition);
+    else
+      os << llvm::formatv(classofArgInfo, name, condition);
   }
 
   const char *classofEndInfo = R"(
-  return true;
+  return derived.size() + empty_optionals == {0};
 }
 )";
-  os << classofEndInfo;
+  os << llvm::formatv(classofEndInfo, fields.size());
 }
 
 static void
@@ -195,11 +219,24 @@ emitAccessorDef(llvm::StringRef structName,
   return {1}.cast<{0}>();
 }
 )";
+  const char *fieldInfoOptional = R"(
+{0} {2}::{1}() const {
+  auto derived = this->cast<mlir::DictionaryAttr>();
+  auto {1} = derived.get("{1}");
+  if (!{1})
+    return nullptr;
+  assert({1}.isa<{0}>() && "incorrect Attribute type found.");
+  return {1}.cast<{0}>();
+}
+)";
   for (auto field : fields) {
     auto name = field.getName();
     auto type = field.getType();
     auto storage = type.getStorageType();
-    os << llvm::formatv(fieldInfo, storage, name, structName);
+    if (type.isOptional())
+      os << llvm::formatv(fieldInfoOptional, storage, name, structName);
+    else
+      os << llvm::formatv(fieldInfo, storage, name, structName);
   }
 }
 
